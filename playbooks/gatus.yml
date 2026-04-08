@@ -1,0 +1,103 @@
+---
+- name: Install and configure Gatus
+  hosts: gatus
+  become: true
+
+  vars:
+    gatus_version: "v5@latest"
+    gatus_go_package: "github.com/TwiN/gatus/{{ gatus_version }}"
+    gatus_binary_path: "/usr/local/bin/gatus"
+    gatus_config_file: "/etc/gatus/config.yaml"
+    gatus_user: "gatus"
+    gatus_group: "gatus"
+
+    gatus_config:
+      endpoints:
+        - name: Example
+          url: https://example.com
+          interval: 60s
+          conditions:
+            - "[STATUS] == 200"
+
+  tasks:
+    - name: Ensure required packages are installed
+      ansible.builtin.package:
+        name: golang
+        state: present
+
+    - name: Ensure gatus group exists
+      ansible.builtin.group:
+        name: "{{ gatus_group }}"
+        system: true
+
+    - name: Ensure gatus user exists
+      ansible.builtin.user:
+        name: "{{ gatus_user }}"
+        group: "{{ gatus_group }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Install Gatus binary via go install
+      ansible.builtin.command:
+        cmd: "go install {{ gatus_go_package }}@latest"
+      environment:
+        GOBIN: "{{ gatus_binary_path | dirname }}"
+      args:
+        creates: "{{ gatus_binary_path }}"
+
+    - name: Ensure config directory exists
+      ansible.builtin.file:
+        path: "{{ gatus_config_file | dirname }}"
+        state: directory
+        owner: "{{ gatus_user }}"
+        group: "{{ gatus_group }}"
+        mode: "0750"
+
+    - name: Deploy Gatus config
+      ansible.builtin.copy:
+        dest: "{{ gatus_config_file }}"
+        owner: "{{ gatus_user }}"
+        group: "{{ gatus_group }}"
+        mode: "0640"
+        content: "{{ gatus_config | to_nice_yaml(indent=2, sort_keys=false) }}"
+
+    - name: Create systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/gatus.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Gatus Monitoring Service
+          After=network.target
+
+          [Service]
+          Type=simple
+          Environment="GATUS_CONFIG_PATH={{ gatus_config_file }}"
+          ExecStart={{ gatus_binary_path }}
+          Restart=always
+          RestartSec=5
+
+          User={{ gatus_user }}
+          Group={{ gatus_group }}
+
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=full
+          ProtectHome=true
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+
+    - name: Ensure Gatus service is enabled and started
+      ansible.builtin.systemd:
+        name: gatus
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

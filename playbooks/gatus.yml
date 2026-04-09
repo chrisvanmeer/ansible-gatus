@@ -8,16 +8,24 @@
     gatus_go_package: "github.com/TwiN/gatus/{{ gatus_version }}"
     gatus_binary_path: "/usr/local/bin/gatus"
     gatus_config_file: "/etc/gatus/config.yaml"
+    gatus_dns_counter_binary_path: /usr/local/bin/dns-counter
+    gatus_dns_counter_port: "8081"
+
     gatus_user: "gatus"
     gatus_group: "gatus"
 
     gatus_config:
       endpoints:
-        - name: Example
-          url: https://example.com
+        - name: Consul DNS
+          group: CTP
+          url: http://localhost:8081/dns?server=192.168.26.1&type=A&domain=consul.service.consul.mox.van-meer.net
+          ui:
+            hide-url: true
+            hide-hostname: true
           interval: 60s
           conditions:
             - "[STATUS] == 200"
+            - "[BODY].count >= 3"
 
   tasks:
     - name: Ensure required packages are installed
@@ -62,7 +70,7 @@
         mode: "0640"
         content: "{{ gatus_config | to_nice_yaml(indent=2, sort_keys=false) }}"
 
-    - name: Create systemd service
+    - name: Ensure Gatus systemd service
       ansible.builtin.copy:
         dest: /etc/systemd/system/gatus.service
         mode: "0644"
@@ -88,8 +96,7 @@
 
           [Install]
           WantedBy=multi-user.target
-      notify:
-        - Reload systemd
+      notify: Restart Gatus
 
     - name: Ensure Gatus service is enabled and started
       ansible.builtin.systemd:
@@ -97,7 +104,101 @@
         enabled: true
         state: started
 
-  handlers:
-    - name: Reload systemd
+    - name: Get status of installed DNS counter binary
+      ansible.builtin.stat:
+        path: "{{ gatus_dns_counter_binary_path }}"
+      register: dns_counter_binary
+
+    - name: Build
+      when: not dns_counter_binary.stat.exists
+      block:
+        - name: Create build directory
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: dns-counter-build
+          register: build_dir
+
+        - name: Copy source file
+          ansible.builtin.copy:
+            src: files/main.go
+            dest: "{{ build_dir.path }}/main.go"
+            mode: "0644"
+          register: source_copied
+
+        - name: Initialize Go module
+          ansible.builtin.command:
+            cmd: go mod init dns-counter
+            chdir: "{{ build_dir.path }}"
+            creates: "{{ build_dir.path }}/go.mod"
+
+        - name: Build binary
+          ansible.builtin.command:
+            cmd: go build -o dns-counter .
+            chdir: "{{ build_dir.path }}"
+          changed_when: source_copied.changed
+
+        - name: Install binary
+          ansible.builtin.copy:
+            src: "{{ build_dir.path }}/dns-counter"
+            dest: "{{ gatus_dns_counter_binary_path }}"
+            mode: "0755"
+            owner: "{{ gatus_user }}"
+            group: "{{ gatus_group }}"
+            remote_src: true
+          notify: Restart dns-counter
+
+        - name: Clean up build directory
+          ansible.builtin.file:
+            path: "{{ build_dir.path }}"
+            state: absent
+
+    - name: Ensure DNS Counter systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/dns-counter.service
+        mode: "0644"
+        owner: root
+        group: root
+        content: |
+          [Unit]
+          Description=DNS Counter Service
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ gatus_user }}
+          Group={{ gatus_group }}
+          Environment=PORT={{ gatus_dns_counter_port }}
+          ExecStart={{ gatus_dns_counter_binary_path }}
+          Restart=on-failure
+          RestartSec=5s
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ProtectHome=true
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=dns-counter
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart DNS Counter
+
+    - name: Enable and start DNS Counter service
       ansible.builtin.systemd:
+        name: dns-counter
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: Restart Gatus
+      ansible.builtin.systemd:
+        name: gatus
+        state: restarted
+        daemon_reload: true
+
+    - name: Restart DNS Counter
+      ansible.builtin.systemd:
+        name: dns-counter
+        state: restarted
         daemon_reload: true

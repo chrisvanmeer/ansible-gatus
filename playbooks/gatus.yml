@@ -16,9 +16,8 @@
 
     gatus_config:
       endpoints:
-        - name: Consul DNS
-          group: CTP
-          url: http://localhost:8081/dns?server=192.168.26.1&type=A&domain=consul.service.consul.mox.van-meer.net
+        - name: Netflix DNS
+          url: http://localhost:8081/dns?server=8.8.8.8&type=A&domain=netflix.com
           ui:
             hide-url: true
             hide-hostname: true

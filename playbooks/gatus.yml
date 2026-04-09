@@ -18,13 +18,22 @@
       endpoints:
         - name: Netflix DNS
           url: http://localhost:8081/dns?server=8.8.8.8&type=A&domain=netflix.com
+          interval: 60s
           ui:
             hide-url: true
             hide-hostname: true
-          interval: 60s
           conditions:
             - "[STATUS] == 200"
             - "[BODY].count >= 3"
+        - name: DNS Counter Health
+          url: "http://localhost:8081/healthz"
+          interval: 5m
+          ui:
+            hide-url: true
+            hide-hostname: true
+          conditions:
+            - "[STATUS] == 200"
+            - "[BODY] == OK"
 
   tasks:
     - name: Ensure required packages are installed
